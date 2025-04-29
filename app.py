@@ -9,13 +9,17 @@ import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
 import streamlit as st
+import schedule
+import threading
+import pytz
 
 # Configuration Variables
 MIN_PRICE = 10.0
 VOLUME_THRESHOLD = 2_000_000
 TIMEFRAMES = ['4hour', 'day', 'week', 'month', 'quarter']
 BATCH_SIZE = 700
-CACHE_FILE = "/tmp/filtered_inside.json"  # Use /tmp for Streamlit Cloud
+CACHE_FILE = "/tmp/filtered_inside.json"
+CACHE_EXPIRY = 86400
 FLOAT_VOL_LOOKBACK = 10
 FLOAT_TRADED_THRESHOLD = 0.03
 
@@ -28,20 +32,25 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('/tmp/polygon_script.log')  # Use /tmp for Streamlit Cloud
+        logging.FileHandler('/tmp/polygon_script.log')
     ]
 )
 logger = logging.getLogger(__name__)
 
 # Streamlit UI
-st.title("Stock Pattern Analysis")
+st.title("Pattern Analysis")
 st.markdown("""
-This app analyzes U.S. stocks for inside and engulfing bar patterns across multiple timeframes using Polygon.io data.
-Click 'Run Analysis' to start.
+Analysing
 """)
 
 # Initialize Polygon client
 client = RESTClient(API_KEY)
+
+# State to store analysis results
+if 'analysis_df' not in st.session_state:
+    st.session_state.analysis_df = None
+if 'last_run' not in st.session_state:
+    st.session_state.last_run = None
 
 async def fetch_stock_data(session, ticker, timeframe, start_date, end_date):
     if timeframe == '4hour':
@@ -251,21 +260,54 @@ def run_analysis(_api_key):
     # Run the async main function
     return asyncio.run(main())
 
-# Button to trigger analysis
-if st.button("Run Analysis"):
+def clear_cache_and_run():
+    """Delete the JSON cache file and run analysis."""
+    try:
+        if os.path.exists(CACHE_FILE):
+            os.remove(CACHE_FILE)
+            logger.info(f"Deleted cache file: {CACHE_FILE}")
+        if API_KEY:
+            logger.info("Running analysis...")
+            df = run_analysis(API_KEY)
+            st.session_state.analysis_df = df
+            st.session_state.last_run = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %H:%M:%S %Z')
+            logger.info("Analysis completed.")
+        else:
+            logger.error("No Polygon API key provided.")
+    except Exception as e:
+        logger.error(f"Error in clear_cache_and_run: {e}")
+
+def run_scheduler():
+    """Run the scheduler in a background thread."""
+    eastern = pytz.timezone('US/Eastern')
+    schedule.every().day.at("13:31", eastern).do(clear_cache_and_run)
+    schedule.every().day.at("16:01", eastern).do(clear_cache_and_run)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # Check every minute
+
+# Start scheduler in a background thread
+if 'scheduler_started' not in st.session_state:
+    st.session_state.scheduler_started = True
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    logger.info("Scheduler started.")
+
+# Manual run button
+if st.button("Run Analysis Now"):
     if API_KEY:
         try:
             with st.spinner("Running analysis... This may take a few minutes."):
-                df = run_analysis(API_KEY)
-            
-            if df.empty:
-                st.warning("No stocks with inside or engulfing patterns found.")
-            else:
-                st.success(f"Found {len(df)} stocks with patterns.")
-                # Format Float Traded as percentage and display table with increased height
-                df['Float Traded'] = df['Float Traded'].apply(lambda x: f"{x:.2%}")
-                st.dataframe(df, use_container_width=True, height=800)
+                clear_cache_and_run()
         except Exception as e:
             st.error(f"Error during analysis: {str(e)}")
     else:
         st.error("Please provide a valid Polygon API key via environment variable.")
+
+# Display results
+if st.session_state.analysis_df is not None:
+    st.success(f"Found {len(st.session_state.analysis_df)} stocks with patterns. Last run: {st.session_state.last_run}")
+    st.session_state.analysis_df['Float Traded'] = st.session_state.analysis_df['Float Traded'].apply(lambda x: f"{x:.2%}")
+    st.dataframe(st.session_state.analysis_df, use_container_width=True, height=800)
+else:
+    st.info("No analysis results yet. Waiting for scheduled run or click 'Run Analysis Now'.")

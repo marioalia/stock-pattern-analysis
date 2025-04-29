@@ -4,3 +4,5 @@ numpy==1.26.4
 polygon-api-client==1.13.7
 aiohttp==3.10.5
 setuptools==70.0.0
+schedule==1.2.2
+pytz==2024.1
