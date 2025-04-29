@@ -12,7 +12,6 @@ import streamlit as st
 import schedule
 import threading
 import pytz
-import plotly.express as px
 
 # Configuration Variables
 MIN_PRICE = 10.0
@@ -85,8 +84,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Streamlit UI
-st.title("📈 Stock Pattern Analysis")
-st.markdown("Analyze U.S. stocks for inside and engulfing patterns across multiple timeframes. Auto-updates at 1:31 PM and 4:01 PM ET. 🚀", unsafe_allow_html=True)
+st.title("📈 Pattern Analysis")
+st.markdown("Analyzing 🚀", unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
@@ -102,7 +101,7 @@ with st.sidebar:
             st.error("No Polygon API key provided.")
 
 # Initialize Polygon client
-client = RESTClient(API_KEY)
+client = RESTClient(API_KEY) if API_KEY else None
 
 # State to store analysis results
 if 'analysis_df' not in st.session_state:
@@ -112,31 +111,39 @@ if 'last_run' not in st.session_state:
 if 'scheduler_started' not in st.session_state:
     st.session_state.scheduler_started = False
 
-async def fetch_stock_data(session, ticker, timeframe, start_date, end_date):
+async def fetch_stock_data(session, ticker, timeframe, start_date, end_date, max_retries=3):
     if timeframe == '4hour':
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/4/hour/{start_date}/{end_date}"
     else:
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/{timeframe}/{start_date}/{end_date}"
     params = {"apiKey": API_KEY, "limit": 5000}
-    try:
-        async with session.get(url, params=params) as response:
-            if response.status == 200:
-                data = await response.json()
-                if data.get('results'):
-                    df = pd.DataFrame([{
-                        'open': bar['o'],
-                        'high': bar['h'],
-                        'low': bar['l'],
-                        'close': bar['c'],
-                        'volume': bar['v'],
-                        'timestamp': pd.to_datetime(bar['t'], unit='ms')
-                    } for bar in data['results']])
-                    return ticker, df
-            logger.warning(f"No data for {ticker} on {timeframe}")
+    for attempt in range(max_retries):
+        try:
+            async with session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('results'):
+                        df = pd.DataFrame([{
+                            'open': bar['o'],
+                            'high': bar['h'],
+                            'low': bar['l'],
+                            'close': bar['c'],
+                            'volume': bar['v'],
+                            'timestamp': pd.to_datetime(bar['t'], unit='ms')
+                        } for bar in data['results']])
+                        return ticker, df
+                elif response.status == 429:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Rate limit hit for {ticker} on {timeframe}. Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.warning(f"No data for {ticker} on {timeframe}: HTTP {response.status}")
+                    return ticker, None
+        except Exception as e:
+            logger.error(f"Error fetching data for {ticker} on {timeframe}: {e}")
             return ticker, None
-    except Exception as e:
-        logger.error(f"Error fetching data for {ticker} on {timeframe}: {e}")
-        return ticker, None
+    logger.error(f"Max retries ({max_retries}) exceeded for {ticker} on {timeframe}")
+    return ticker, None
 
 def is_inside_bar(current, previous):
     return (current['high'] <= previous['high'] and current['low'] >= previous['low'])
@@ -202,8 +209,12 @@ async def get_filtered_tickers(rest_client):
             return cache_data['tickers']
 
     tickers = []
-    all_tickers = [ticker.ticker for ticker in rest_client.list_tickers(market='stocks', type='CS', active=True, limit=1000)]
-    logger.info(f"Retrieved {len(all_tickers)} active U.S. stock tickers.")
+    try:
+        all_tickers = [ticker.ticker for ticker in rest_client.list_tickers(market='stocks', type='CS', active=True, limit=1000)]
+        logger.info(f"Retrieved {len(all_tickers)} active U.S. stock tickers.")
+    except Exception as e:
+        logger.error(f"Error fetching ticker list: {e}")
+        return tickers
 
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(all_tickers), BATCH_SIZE):
@@ -241,8 +252,9 @@ async def get_filtered_tickers(rest_client):
             await asyncio.sleep(0.05)
 
     logger.info(f"Filtered {len(tickers)} tickers")
-    with open(CACHE_FILE, 'w') as f:
-        json.dump({'timestamp': time.time(), 'tickers': tickers}, f)
+    if tickers:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump({'timestamp': time.time(), 'tickers': tickers}, f)
     return tickers
 
 async def process_batch(session, tickers):
@@ -257,9 +269,17 @@ async def process_batch(session, tickers):
 def run_analysis(_api_key):
     async def main():
         logger.info("Starting script...")
+        if not _api_key:
+            logger.error("No valid Polygon API key provided.")
+            raise ValueError("No valid Polygon API key provided.")
         rest_client = RESTClient(api_key=_api_key)
         try:
             tickers = await get_filtered_tickers(rest_client)
+            logger.info(f"Retrieved {len(tickers)} filtered tickers")
+
+            if not tickers:
+                logger.warning("No tickers meet the filtering criteria.")
+                return pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded"])
 
             results = []
             async with aiohttp.ClientSession() as session:
@@ -303,17 +323,18 @@ def run_analysis(_api_key):
             for ticker, data_dict in sorted_tickers:
                 inside = ", ".join(data_dict['inside']) if data_dict['inside'] else ""
                 engulfing = ", ".join(data_dict['engulfing']) if data_dict['engulfing'] else ""
+                logger.debug(f"Adding ticker {ticker} with Float Traded: {data_dict['avg_float_traded']}")
                 data.append({
                     "Ticker": ticker,
                     "Inside": inside,
                     "Engulfing": engulfing,
-                    "Float Traded": f"{data_dict['avg_float_traded']:.2%}"  # Format here
+                    "Float Traded": f"{data_dict['avg_float_traded']:.2%}"
                 })
             df = pd.DataFrame(data)
-            logger.info(f"DataFrame columns: {df.columns.tolist()}")
-            return df
+            logger.info(f"DataFrame columns: {df.columns.tolist()}, rows: {len(df)}")
+            return df if not df.empty else pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded"])
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error in run_analysis: {e}", exc_info=True)
             raise
         finally:
             logger.info("Script execution completed.")
@@ -324,23 +345,29 @@ def run_analysis(_api_key):
 def clear_cache_and_run():
     """Delete the JSON cache file and run analysis."""
     try:
+        logger.info("Starting clear_cache_and_run")
         if os.path.exists(CACHE_FILE):
-            os.remove(CACHE_FILE)
-            logger.info(f"Deleted cache file: {CACHE_FILE}")
-        if API_KEY:
-            logger.info("Running analysis...")
-            progress_bar = st.progress(0)
-            df = run_analysis(API_KEY)
-            progress_bar.progress(100)
-            st.session_state.analysis_df = df
-            st.session_state.last_run = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %H:%M:%S %Z')
-            logger.info("Analysis completed.")
-        else:
+            try:
+                os.remove(CACHE_FILE)
+                logger.info(f"Deleted cache file: {CACHE_FILE}")
+            except Exception as e:
+                logger.warning(f"Failed to delete cache file {CACHE_FILE}: {e}. Continuing without cache.")
+        if not API_KEY:
             logger.error("No Polygon API key provided.")
             st.error("No Polygon API key provided.")
+            return
+        logger.info("Running analysis...")
+        progress_bar = st.progress(0)
+        df = run_analysis(API_KEY)
+        progress_bar.progress(100)
+        st.session_state.analysis_df = df
+        st.session_state.last_run = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %H:%M:%S %Z')
+        logger.info("Analysis completed successfully.")
     except Exception as e:
-        logger.error(f"Error in clear_cache_and_run: {e}")
+        logger.error(f"Error in clear_cache_and_run: {e}", exc_info=True)
         st.error(f"Error during analysis: {str(e)}")
+    finally:
+        logger.info("Completed clear_cache_and_run")
 
 def run_scheduler():
     """Run the scheduler in a background thread."""
@@ -357,48 +384,24 @@ if st.session_state.analysis_df is None and API_KEY:
         clear_cache_and_run()
 
 # Start scheduler in a background thread
-if not st.session_state.scheduler_started:
+if not st.session_state.scheduler_started and API_KEY:
     st.session_state.scheduler_started = True
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
     logger.info("Scheduler started.")
 
 # Main content
-col1, col2 = st.columns([2, 1])
-with col1:
-    st.subheader("📊 Results")
-    if st.session_state.analysis_df is not None and not st.session_state.analysis_df.empty:
-        # Search filter
-        search = st.text_input("🔍 Search Tickers", "")
-        df = st.session_state.analysis_df.copy()  # Create a copy to avoid modifying original
-        if search:
-            df = df[df['Ticker'].str.contains(search, case=False, na=False)]
-        st.success(f"Found {len(df)} stocks with patterns. Last run: {st.session_state.last_run}")
-        if not df.empty:
-            st.dataframe(df, use_container_width=True, height=800)
-        else:
-            st.warning("No tickers match the search criteria.")
+st.subheader("📊 Results")
+if st.session_state.analysis_df is not None and not st.session_state.analysis_df.empty:
+    # Search filter
+    search = st.text_input("🔍 Search Tickers", "")
+    df = st.session_state.analysis_df.copy()  # Create a copy to avoid modifying original
+    if search:
+        df = df[df['Ticker'].str.contains(search, case=False, na=False)]
+    st.success(f"Found {len(df)} stocks with patterns. Last run: {st.session_state.last_run}")
+    if not df.empty:
+        st.dataframe(df, use_container_width=True, height=800)
     else:
-        st.info("No analysis results yet. Waiting for scheduled run.")
-
-with col2:
-    st.subheader("📈 Float Traded Distribution")
-    if st.session_state.analysis_df is not None and not st.session_state.analysis_df.empty:
-        # Convert formatted percentage back to float for plotting
-        plot_df = st.session_state.analysis_df.copy()
-        plot_df['Float Traded'] = plot_df['Float Traded'].str.rstrip('%').astype(float) / 100
-        fig = px.bar(
-            plot_df,
-            x='Ticker',
-            y='Float Traded',
-            title='Float Traded by Ticker',
-            color='Float Traded',
-            color_continuous_scale='Viridis'
-        )
-        fig.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='white',
-            title_font_color='white'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.warning("No tickers match the search criteria.")
+else:
+    st.info("No analysis results yet. Waiting for scheduled run or check API key.")
