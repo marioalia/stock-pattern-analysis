@@ -12,6 +12,7 @@ import streamlit as st
 import schedule
 import threading
 import pytz
+import plotly.express as px
 
 # Configuration Variables
 MIN_PRICE = 10.0
@@ -37,11 +38,68 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Streamlit UI
-st.title("Pattern Analysis")
+# Custom CSS for a modern look
 st.markdown("""
-Analyzing.
-""")
+    <style>
+    /* Dark theme with gradient background */
+    .stApp {
+        background: linear-gradient(135deg, #1e3c72, #2a5298);
+        color: #ffffff;
+    }
+    /* Style the title */
+    h1 {
+        font-family: 'Arial', sans-serif;
+        color: #00ff99;
+        text-align: center;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+    }
+    /* Style the table */
+    .stDataFrame {
+        background-color: rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+        padding: 10px;
+    }
+    /* Style buttons */
+    .stButton>button {
+        background-color: #00ff99;
+        color: #1e3c72;
+        border-radius: 5px;
+        font-weight: bold;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover {
+        background-color: #00cc77;
+        transform: scale(1.05);
+    }
+    /* Sidebar styling */
+    .css-1d391kg {
+        background-color: rgba(0, 0, 0, 0.2);
+    }
+    /* Input field styling */
+    .stTextInput input {
+        background-color: rgba(255, 255, 255, 0.1);
+        color: #ffffff;
+        border-radius: 5px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Streamlit UI
+st.title("📈 Pattern Analysis")
+st.markdown("Analyzing. 🚀", unsafe_allow_html=True)
+
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ Controls")
+    st.markdown(f"**Last Run**: {st.session_state.get('last_run', 'Not yet run')}")
+    st.markdown("---")
+    st.markdown("**Run Manually**")
+    if st.button("🔄 Run Analysis Now"):
+        if API_KEY:
+            with st.spinner("Running analysis..."):
+                clear_cache_and_run()
+        else:
+            st.error("No Polygon API key provided.")
 
 # Initialize Polygon client
 client = RESTClient(API_KEY)
@@ -81,7 +139,7 @@ async def fetch_stock_data(session, ticker, timeframe, start_date, end_date):
         return ticker, None
 
 def is_inside_bar(current, previous):
-    return (current['high'] <= previous['high'] and current['low'] >= previous['low'])
+    return (current['high'] <= предыдущий['high'] and current['low'] >= previous['low'])
 
 def is_engulfing_bar(current, previous):
     current_range = current['high'] - current['low']
@@ -270,7 +328,9 @@ def clear_cache_and_run():
             logger.info(f"Deleted cache file: {CACHE_FILE}")
         if API_KEY:
             logger.info("Running analysis...")
+            progress_bar = st.progress(0)
             df = run_analysis(API_KEY)
+            progress_bar.progress(100)
             st.session_state.analysis_df = df
             st.session_state.last_run = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %H:%M:%S %Z')
             logger.info("Analysis completed.")
@@ -288,11 +348,11 @@ def run_scheduler():
     schedule.every().day.at("16:01", eastern).do(clear_cache_and_run)
     while True:
         schedule.run_pending()
-        time.sleep(60)  # Check every minute
+        time.sleep(60)
 
 # Run analysis on startup if no results exist
 if st.session_state.analysis_df is None and API_KEY:
-    with st.spinner("Running initial analysis... This may take a few minutes."):
+    with st.spinner("Running initial analysis..."):
         clear_cache_and_run()
 
 # Start scheduler in a background thread
@@ -302,18 +362,37 @@ if not st.session_state.scheduler_started:
     scheduler_thread.start()
     logger.info("Scheduler started.")
 
-# Manual run button
-if st.button("Run Analysis Now"):
-    if API_KEY:
-        with st.spinner("Running analysis... This may take a few minutes."):
-            clear_cache_and_run()
+# Main content
+col1, col2 = st.columns([2, 1])
+with col1:
+    st.subheader("📊 Results")
+    if st.session_state.analysis_df is not None:
+        # Search filter
+        search = st.text_input("🔍 Search Tickers", "")
+        df = st.session_state.analysis_df
+        if search:
+            df = df[df['Ticker'].str.contains(search, case=False, na=False)]
+        st.success(f"Found {len(df)} stocks with patterns. Last run: {st.session_state.last_run}")
+        df['Float Traded'] = df['Float Traded'].apply(lambda x: f"{x:.2%}")
+        st.dataframe(df, use_container_width=True, height=800)
     else:
-        st.error("Please provide a valid Polygon API key via environment variable.")
+        st.info("No analysis results yet. Waiting for scheduled run.")
 
-# Display results
-if st.session_state.analysis_df is not None:
-    st.success(f"Found {len(st.session_state.analysis_df)} stocks with patterns. Last run: {st.session_state.last_run}")
-    st.session_state.analysis_df['Float Traded'] = st.session_state.analysis_df['Float Traded'].apply(lambda x: f"{x:.2%}")
-    st.dataframe(st.session_state.analysis_df, use_container_width=True, height=800)
-else:
-    st.info("No analysis results yet. Waiting for scheduled run or click 'Run Analysis Now'.")
+with col2:
+    st.subheader("📈 Float Traded Distribution")
+    if st.session_state.analysis_df is not None:
+        fig = px.bar(
+            st.session_state.analysis_df,
+            x='Ticker',
+            y='Float Traded',
+            title='Float Traded by Ticker',
+            color='Float Traded',
+            color_continuous_scale='Viridis'
+        )
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font_color='white',
+            title_font_color='white'
+        )
+        st.plotly_chart(fig, use_container_width=True)
