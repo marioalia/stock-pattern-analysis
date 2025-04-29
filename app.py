@@ -40,25 +40,21 @@ logger = logging.getLogger(__name__)
 # Custom CSS for a modern look with black background
 st.markdown("""
     <style>
-    /* Black background */
     .stApp {
         background: #000000;
         color: #ffffff;
     }
-    /* Style the title */
     h1 {
         font-family: 'Arial', sans-serif;
         color: #00ff99;
         text-align: center;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
     }
-    /* Style the table */
     .stDataFrame {
         background-color: rgba(255, 255, 255, 0.1);
         border-radius: 10px;
         padding: 10px;
     }
-    /* Style buttons */
     .stButton>button {
         background-color: #00ff99;
         color: #1e3c72;
@@ -70,11 +66,9 @@ st.markdown("""
         background-color: #00cc77;
         transform: scale(1.05);
     }
-    /* Sidebar styling */
     .css-1d391kg {
         background-color: rgba(255, 255, 255, 0.1);
     }
-    /* Input field styling */
     .stTextInput input {
         background-color: rgba(255, 255, 255, 0.1);
         color: #ffffff;
@@ -191,12 +185,31 @@ async def analyze_ticker(session, ticker, timeframe):
     if avg_float_traded < FLOAT_TRADED_THRESHOLD:
         return None
 
+    # Fetch earnings data
+    last_earnings_date = None
+    next_earnings_date = None
+    try:
+        earnings = client.get_earnings(ticker)
+        if earnings:
+            # Get the most recent earnings date
+            latest_earning = max(earnings, key=lambda x: x.report_date)
+            last_earnings_date = latest_earning.report_date
+            # Estimate next earnings date (assume quarterly, ~90 days later)
+            last_date = datetime.strptime(last_earnings_date, '%Y-%m-%d')
+            next_earnings_date = (last_date + timedelta(days=90)).strftime('%Y-%m-%d')
+        else:
+            logger.warning(f"No earnings data for {ticker}")
+    except Exception as e:
+        logger.warning(f"Couldn't fetch earnings for {ticker}: {e}")
+
     result = {
         'ticker': ticker,
         'timeframe': timeframe,
         'inside_bar': is_inside_bar(current_bar, previous_bar),
         'engulfing_bar': is_engulfing_bar(current_bar, previous_bar),
-        'avg_float_traded': avg_float_traded
+        'avg_float_traded': avg_float_traded,
+        'last_earnings_date': last_earnings_date,
+        'next_earnings_date': next_earnings_date
     }
     return result
 
@@ -279,7 +292,7 @@ def run_analysis(_api_key):
 
             if not tickers:
                 logger.warning("No tickers meet the filtering criteria.")
-                return pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded"])
+                return pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded", "Last Earnings", "Next Earnings"])
 
             results = []
             async with aiohttp.ClientSession() as session:
@@ -302,7 +315,9 @@ def run_analysis(_api_key):
                     ticker_groups[ticker] = {
                         'inside': [],
                         'engulfing': [],
-                        'avg_float_traded': result['avg_float_traded']
+                        'avg_float_traded': result['avg_float_traded'],
+                        'last_earnings_date': result['last_earnings_date'],
+                        'next_earnings_date': result['next_earnings_date']
                     }
                 if result['inside_bar']:
                     ticker_groups[ticker]['inside'].append(timeframe_map[result['timeframe']])
@@ -328,11 +343,13 @@ def run_analysis(_api_key):
                     "Ticker": ticker,
                     "Inside": inside,
                     "Engulfing": engulfing,
-                    "Float Traded": f"{data_dict['avg_float_traded']:.2%}"
+                    "Float Traded": f"{data_dict['avg_float_traded']:.2%}",
+                    "Last Earnings": data_dict['last_earnings_date'] or "N/A",
+                    "Next Earnings": data_dict['next_earnings_date'] or "N/A"
                 })
             df = pd.DataFrame(data)
             logger.info(f"DataFrame columns: {df.columns.tolist()}, rows: {len(df)}")
-            return df if not df.empty else pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded"])
+            return df if not df.empty else pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded", "Last Earnings", "Next Earnings"])
         except Exception as e:
             logger.error(f"Unexpected error in run_analysis: {e}", exc_info=True)
             raise
