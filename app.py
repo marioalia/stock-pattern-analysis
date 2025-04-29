@@ -85,8 +85,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Streamlit UI
-st.title("📈 Pattern Analysis")
-st.markdown("Analyzing. 🚀", unsafe_allow_html=True)
+st.title("📈 Stock Pattern Analysis")
+st.markdown("Analyze U.S. stocks for inside and engulfing patterns across multiple timeframes. Auto-updates at 1:31 PM and 4:01 PM ET. 🚀", unsafe_allow_html=True)
 
 # Sidebar
 with st.sidebar:
@@ -139,7 +139,7 @@ async def fetch_stock_data(session, ticker, timeframe, start_date, end_date):
         return ticker, None
 
 def is_inside_bar(current, previous):
-    return (current['high'] <= предыдущий['high'] and current['low'] >= previous['low'])
+    return (current['high'] <= previous['high'] and current['low'] >= previous['low'])
 
 def is_engulfing_bar(current, previous):
     current_range = current['high'] - current['low']
@@ -307,9 +307,10 @@ def run_analysis(_api_key):
                     "Ticker": ticker,
                     "Inside": inside,
                     "Engulfing": engulfing,
-                    "Float Traded": data_dict['avg_float_traded']
+                    "Float Traded": f"{data_dict['avg_float_traded']:.2%}"  # Format here
                 })
             df = pd.DataFrame(data)
+            logger.info(f"DataFrame columns: {df.columns.tolist()}")
             return df
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
@@ -366,23 +367,28 @@ if not st.session_state.scheduler_started:
 col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("📊 Results")
-    if st.session_state.analysis_df is not None:
+    if st.session_state.analysis_df is not None and not st.session_state.analysis_df.empty:
         # Search filter
         search = st.text_input("🔍 Search Tickers", "")
-        df = st.session_state.analysis_df
+        df = st.session_state.analysis_df.copy()  # Create a copy to avoid modifying original
         if search:
             df = df[df['Ticker'].str.contains(search, case=False, na=False)]
         st.success(f"Found {len(df)} stocks with patterns. Last run: {st.session_state.last_run}")
-        df['Float Traded'] = df['Float Traded'].apply(lambda x: f"{x:.2%}")
-        st.dataframe(df, use_container_width=True, height=800)
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, height=800)
+        else:
+            st.warning("No tickers match the search criteria.")
     else:
         st.info("No analysis results yet. Waiting for scheduled run.")
 
 with col2:
     st.subheader("📈 Float Traded Distribution")
-    if st.session_state.analysis_df is not None:
+    if st.session_state.analysis_df is not None and not st.session_state.analysis_df.empty:
+        # Convert formatted percentage back to float for plotting
+        plot_df = st.session_state.analysis_df.copy()
+        plot_df['Float Traded'] = plot_df['Float Traded'].str.rstrip('%').astype(float) / 100
         fig = px.bar(
-            st.session_state.analysis_df,
+            plot_df,
             x='Ticker',
             y='Float Traded',
             title='Float Traded by Ticker',
