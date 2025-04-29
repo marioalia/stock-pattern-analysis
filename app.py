@@ -38,10 +38,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Streamlit UI
-st.title("Stock Pattern Analysis")
+st.title("Pattern Analysis")
 st.markdown("""
-This app analyzes U.S. stocks for inside and engulfing bar patterns across multiple timeframes using Polygon.io data.
-The analysis runs automatically at 1:31 PM and 4:01 PM Eastern Time daily, with fresh data.
+Analyzing.
 """)
 
 # Initialize Polygon client
