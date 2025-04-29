@@ -37,12 +37,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Custom CSS for a modern look
+# Custom CSS for a modern look with black background
 st.markdown("""
     <style>
-    /* Dark theme with gradient background */
+    /* Black background */
     .stApp {
-        background: linear-gradient(135deg, #1e3c72, #2a5298);
+        background: #000000;
         color: #ffffff;
     }
     /* Style the title */
@@ -72,7 +72,7 @@ st.markdown("""
     }
     /* Sidebar styling */
     .css-1d391kg {
-        background-color: rgba(0, 0, 0, 0.2);
+        background-color: rgba(255, 255, 255, 0.1);
     }
     /* Input field styling */
     .stTextInput input {
