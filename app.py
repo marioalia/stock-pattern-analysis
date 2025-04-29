@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Streamlit UI
 st.title("Pattern Analysis")
 st.markdown("""
-Analysing
+Analyzing
 """)
 
 # Initialize Polygon client
