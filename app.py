@@ -20,8 +20,8 @@ TIMEFRAMES = ['4hour', 'day', 'week', 'month', 'quarter']
 BATCH_SIZE = 700
 CACHE_FILE = "/tmp/filtered_inside.json"
 CACHE_EXPIRY = 86400
-FLOAT_VOL_LOOKBACK = 10
-FLOAT_TRADED_THRESHOLD = 0.03
+VOLUME_LOOKBACK = 10  # Days for relative volume calculation
+RELATIVE_VOLUME_THRESHOLD = 1.0  # Minimum relative volume to include (e.g., 1.0 means at least average volume)
 
 # Use environment variable for API key
 API_KEY = os.getenv("POLYGON_API_KEY")
@@ -159,7 +159,7 @@ async def analyze_ticker(session, ticker, timeframe):
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
     ticker, df = await fetch_stock_data(session, ticker, timeframe, start_date, end_date)
-    if df is None or len(df) < FLOAT_VOL_LOOKBACK:
+    if df is None or len(df) < 2:  # Need at least 2 bars for pattern analysis
         return None
 
     latest_price = df['close'].iloc[-1]
@@ -169,20 +169,20 @@ async def analyze_ticker(session, ticker, timeframe):
     current_bar = df.iloc[-1]
     previous_bar = df.iloc[-2]
 
-    try:
-        fundamentals = client.get_ticker_details(ticker)
-        shares_float = fundamentals.share_class_shares_outstanding
-    except Exception as e:
-        logger.warning(f"Couldn't fetch float for {ticker}: {e}")
-        return None
-
-    if not shares_float or shares_float == 0:
-        return None
-
-    float_traded_series = df['volume'].tail(FLOAT_VOL_LOOKBACK) / shares_float
-    avg_float_traded = float_traded_series.mean()
-
-    if avg_float_traded < FLOAT_TRADED_THRESHOLD:
+    # Fetch daily data for relative volume (past 10 days + current day)
+    volume_start_date = (datetime.now() - timedelta(days=VOLUME_LOOKBACK + 1)).strftime('%Y-%m-%d')
+    _, volume_df = await fetch_stock_data(session, ticker, 'day', volume_start_date, end_date)
+    relative_volume = None
+    if volume_df is not None and len(volume_df) >= VOLUME_LOOKBACK + 1:
+        current_volume = volume_df['volume'].iloc[-1]
+        past_volumes = volume_df['volume'].iloc[-VOLUME_LOOKBACK-1:-1]  # Exclude current day
+        if len(past_volumes) == VOLUME_LOOKBACK and past_volumes.mean() > 0:
+            relative_volume = current_volume / past_volumes.mean()
+            if relative_volume < RELATIVE_VOLUME_THRESHOLD:
+                return None
+        else:
+            return None
+    else:
         return None
 
     # Fetch earnings data
@@ -191,10 +191,8 @@ async def analyze_ticker(session, ticker, timeframe):
     try:
         earnings = client.get_earnings(ticker)
         if earnings:
-            # Get the most recent earnings date
             latest_earning = max(earnings, key=lambda x: x.report_date)
             last_earnings_date = latest_earning.report_date
-            # Estimate next earnings date (assume quarterly, ~90 days later)
             last_date = datetime.strptime(last_earnings_date, '%Y-%m-%d')
             next_earnings_date = (last_date + timedelta(days=90)).strftime('%Y-%m-%d')
         else:
@@ -207,7 +205,7 @@ async def analyze_ticker(session, ticker, timeframe):
         'timeframe': timeframe,
         'inside_bar': is_inside_bar(current_bar, previous_bar),
         'engulfing_bar': is_engulfing_bar(current_bar, previous_bar),
-        'avg_float_traded': avg_float_traded,
+        'relative_volume': relative_volume,
         'last_earnings_date': last_earnings_date,
         'next_earnings_date': next_earnings_date
     }
@@ -292,7 +290,7 @@ def run_analysis(_api_key):
 
             if not tickers:
                 logger.warning("No tickers meet the filtering criteria.")
-                return pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded", "Last Earnings", "Next Earnings"])
+                return pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Relative Volume", "Last Earnings", "Next Earnings"])
 
             results = []
             async with aiohttp.ClientSession() as session:
@@ -315,7 +313,7 @@ def run_analysis(_api_key):
                     ticker_groups[ticker] = {
                         'inside': [],
                         'engulfing': [],
-                        'avg_float_traded': result['avg_float_traded'],
+                        'relative_volume': result['relative_volume'],
                         'last_earnings_date': result['last_earnings_date'],
                         'next_earnings_date': result['next_earnings_date']
                     }
@@ -330,26 +328,28 @@ def run_analysis(_api_key):
                 if data['inside'] or data['engulfing']
             }
 
-            # Sort filtered tickers by avg_float_traded in descending order
-            sorted_tickers = sorted(filtered_tickers.items(), key=lambda x: x[1]['avg_float_traded'], reverse=True)
+            # Sort filtered tickers by relative_volume in descending order
+            sorted_tickers = sorted(filtered_tickers.items(), key=lambda x: x[1]['relative_volume'] or 0, reverse=True)
 
             # Prepare DataFrame for display
             data = []
             for ticker, data_dict in sorted_tickers:
                 inside = ", ".join(data_dict['inside']) if data_dict['inside'] else ""
                 engulfing = ", ".join(data_dict['engulfing']) if data_dict['engulfing'] else ""
-                logger.debug(f"Adding ticker {ticker} with Float Traded: {data_dict['avg_float_traded']}")
+                relative_volume = data_dict['relative_volume']
+                relative_volume_str = f"{relative_volume:.2f}x" if relative_volume is not None else "N/A"
+                logger.debug(f"Adding ticker {ticker} with Relative Volume: {relative_volume_str}")
                 data.append({
                     "Ticker": ticker,
                     "Inside": inside,
                     "Engulfing": engulfing,
-                    "Float Traded": f"{data_dict['avg_float_traded']:.2%}",
+                    "Relative Volume": relative_volume_str,
                     "Last Earnings": data_dict['last_earnings_date'] or "N/A",
                     "Next Earnings": data_dict['next_earnings_date'] or "N/A"
                 })
             df = pd.DataFrame(data)
             logger.info(f"DataFrame columns: {df.columns.tolist()}, rows: {len(df)}")
-            return df if not df.empty else pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Float Traded", "Last Earnings", "Next Earnings"])
+            return df if not df.empty else pd.DataFrame(columns=["Ticker", "Inside", "Engulfing", "Relative Volume", "Last Earnings", "Next Earnings"])
         except Exception as e:
             logger.error(f"Unexpected error in run_analysis: {e}", exc_info=True)
             raise
