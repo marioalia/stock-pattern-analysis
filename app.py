@@ -38,9 +38,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Streamlit UI
-st.title("Pattern Analysis")
+st.title("Stock Pattern Analysis")
 st.markdown("""
-Analyzing
+This app analyzes U.S. stocks for inside and engulfing bar patterns across multiple timeframes using Polygon.io data.
+The analysis runs automatically at 1:31 PM and 4:01 PM Eastern Time daily, with fresh data.
 """)
 
 # Initialize Polygon client
@@ -51,6 +52,8 @@ if 'analysis_df' not in st.session_state:
     st.session_state.analysis_df = None
 if 'last_run' not in st.session_state:
     st.session_state.last_run = None
+if 'scheduler_started' not in st.session_state:
+    st.session_state.scheduler_started = False
 
 async def fetch_stock_data(session, ticker, timeframe, start_date, end_date):
     if timeframe == '4hour':
@@ -274,8 +277,10 @@ def clear_cache_and_run():
             logger.info("Analysis completed.")
         else:
             logger.error("No Polygon API key provided.")
+            st.error("No Polygon API key provided.")
     except Exception as e:
         logger.error(f"Error in clear_cache_and_run: {e}")
+        st.error(f"Error during analysis: {str(e)}")
 
 def run_scheduler():
     """Run the scheduler in a background thread."""
@@ -286,8 +291,13 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(60)  # Check every minute
 
+# Run analysis on startup if no results exist
+if st.session_state.analysis_df is None and API_KEY:
+    with st.spinner("Running initial analysis... This may take a few minutes."):
+        clear_cache_and_run()
+
 # Start scheduler in a background thread
-if 'scheduler_started' not in st.session_state:
+if not st.session_state.scheduler_started:
     st.session_state.scheduler_started = True
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
@@ -296,11 +306,8 @@ if 'scheduler_started' not in st.session_state:
 # Manual run button
 if st.button("Run Analysis Now"):
     if API_KEY:
-        try:
-            with st.spinner("Running analysis... This may take a few minutes."):
-                clear_cache_and_run()
-        except Exception as e:
-            st.error(f"Error during analysis: {str(e)}")
+        with st.spinner("Running analysis... This may take a few minutes."):
+            clear_cache_and_run()
     else:
         st.error("Please provide a valid Polygon API key via environment variable.")
 
