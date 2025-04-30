@@ -21,7 +21,7 @@ BATCH_SIZE = 700
 CACHE_FILE = "/tmp/filtered_inside.json"
 CACHE_EXPIRY = 86400
 VOLUME_LOOKBACK = 10  # Days for relative volume calculation
-RELATIVE_VOLUME_THRESHOLD = 1.0  # Minimum relative volume to include (e.g., 1.0 means at least average volume)
+RELATIVE_VOLUME_THRESHOLD = 1.0  # Minimum relative volume to include
 
 # Use environment variable for API key
 API_KEY = os.getenv("POLYGON_API_KEY")
@@ -37,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Custom CSS for a modern look with black background
+# Custom CSS for Streamlit UI
 st.markdown("""
     <style>
     .stApp {
@@ -80,19 +80,6 @@ st.markdown("""
 # Streamlit UI
 st.title("📈 Pattern Analysis")
 st.markdown("Analyzing 🚀", unsafe_allow_html=True)
-
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Controls")
-    st.markdown(f"**Last Run**: {st.session_state.get('last_run', 'Not yet run')}")
-    st.markdown("---")
-    st.markdown("**Run Manually**")
-    if st.button("🔄 Run Analysis Now"):
-        if API_KEY:
-            with st.spinner("Running analysis..."):
-                clear_cache_and_run()
-        else:
-            st.error("No Polygon API key provided.")
 
 # Initialize Polygon client
 client = RESTClient(API_KEY) if API_KEY else None
@@ -159,7 +146,7 @@ async def analyze_ticker(session, ticker, timeframe):
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
     ticker, df = await fetch_stock_data(session, ticker, timeframe, start_date, end_date)
-    if df is None or len(df) < 2:  # Need at least 2 bars for pattern analysis
+    if df is None or len(df) < 2:
         return None
 
     latest_price = df['close'].iloc[-1]
@@ -169,13 +156,13 @@ async def analyze_ticker(session, ticker, timeframe):
     current_bar = df.iloc[-1]
     previous_bar = df.iloc[-2]
 
-    # Fetch daily data for relative volume (past 10 days + current day)
+    # Fetch daily data for relative volume
     volume_start_date = (datetime.now() - timedelta(days=VOLUME_LOOKBACK + 1)).strftime('%Y-%m-%d')
     _, volume_df = await fetch_stock_data(session, ticker, 'day', volume_start_date, end_date)
     relative_volume = None
     if volume_df is not None and len(volume_df) >= VOLUME_LOOKBACK + 1:
         current_volume = volume_df['volume'].iloc[-1]
-        past_volumes = volume_df['volume'].iloc[-VOLUME_LOOKBACK-1:-1]  # Exclude current day
+        past_volumes = volume_df['volume'].iloc[-VOLUME_LOOKBACK-1:-1]
         if len(past_volumes) == VOLUME_LOOKBACK and past_volumes.mean() > 0:
             relative_volume = current_volume / past_volumes.mean()
             if relative_volume < RELATIVE_VOLUME_THRESHOLD:
@@ -356,7 +343,6 @@ def run_analysis(_api_key):
         finally:
             logger.info("Script execution completed.")
 
-    # Run the async main function
     return asyncio.run(main())
 
 def clear_cache_and_run():
@@ -395,6 +381,19 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(60)
 
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ Controls")
+    st.markdown(f"**Last Run**: {st.session_state.get('last_run', 'Not yet run')}")
+    st.markdown("---")
+    st.markdown("**Run Manually**")
+    if st.button("🔄 Run Analysis Now"):
+        if API_KEY:
+            with st.spinner("Running analysis..."):
+                clear_cache_and_run()
+        else:
+            st.error("No Polygon API key provided.")
+
 # Run analysis on startup if no results exist
 if st.session_state.analysis_df is None and API_KEY:
     with st.spinner("Running initial analysis..."):
@@ -410,9 +409,8 @@ if not st.session_state.scheduler_started and API_KEY:
 # Main content
 st.subheader("📊 Results")
 if st.session_state.analysis_df is not None and not st.session_state.analysis_df.empty:
-    # Search filter
     search = st.text_input("🔍 Search Tickers", "")
-    df = st.session_state.analysis_df.copy()  # Create a copy to avoid modifying original
+    df = st.session_state.analysis_df.copy()
     if search:
         df = df[df['Ticker'].str.contains(search, case=False, na=False)]
     st.success(f"Found {len(df)} stocks with patterns. Last run: {st.session_state.last_run}")
