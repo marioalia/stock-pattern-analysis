@@ -22,7 +22,7 @@ BATCH_SIZE = 700  # Number of tickers to process per batch
 CACHE_FILE = "/tmp/filtered_inside.json"
 CACHE_EXPIRY = 86400  # Cache expiry in seconds (24 hours)
 VOLUME_LOOKBACK = 10  # Days for relative volume calculation
-RELATIVE_VOLUME_THRESHOLD = 1.5  # Minimum relative volume (1.5x)
+RELATIVE_VOLUME_THRESHOLD = 1.5  # Minimum relative volume (adjust here, e.g., 1.0, 2.0)
 
 # Use environment variable for Polygon API key
 API_KEY = os.getenv("POLYGON_API_KEY")
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Streamlit UI
 st.title("Pattern Analysis")
-st.markdown("Analyzing")
+st.markdown("Analyzing stocks for inside and engulfing patterns")
 
 # Initialize Polygon client
 client = RESTClient(API_KEY) if API_KEY else None
@@ -328,7 +328,7 @@ def clear_cache_and_run():
             logger.error("No Polygon API key provided.")
             st.error("No Polygon API key provided.")
             return
-        logger.info("Running analysis...")
+        logger.info(f"Running analysis with relative volume threshold: {RELATIVE_VOLUME_THRESHOLD}x...")
         progress_bar = st.progress(0)
         df = run_analysis(API_KEY)
         progress_bar.progress(100)
@@ -382,7 +382,7 @@ if st.session_state.analysis_df is not None and not st.session_state.analysis_df
     df = st.session_state.analysis_df.copy()
     if search:
         df = df[df['Ticker'].str.contains(search, case=False, na=False)]
-    st.success(f"Found {len(df)} stocks with patterns. Last run: {st.session_state.last_run}")
+    st.success(f"Found {len(df)} stocks with patterns (Relative Volume ≥ {RELATIVE_VOLUME_THRESHOLD}x). Last run: {st.session_state.last_run}")
     if not df.empty:
         st.dataframe(df, use_container_width=True, height=800)
     else:
