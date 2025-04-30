@@ -6,3 +6,4 @@ aiohttp==3.10.5
 setuptools==70.0.0
 schedule==1.2.2
 pytz==2024.1
+yfinance
