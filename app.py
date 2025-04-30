@@ -6,6 +6,7 @@ import json
 import time
 from polygon.rest import RESTClient
 import pandas as pd
+import yfinance as yf
 from datetime import datetime, timedelta
 import numpy as np
 import streamlit as st
@@ -14,16 +15,16 @@ import threading
 import pytz
 
 # Configuration Variables
-MIN_PRICE = 10.0
-VOLUME_THRESHOLD = 2_000_000
+MIN_PRICE = 10.0  # Minimum stock price
+VOLUME_THRESHOLD = 2_000_000  # Minimum average daily volume
 TIMEFRAMES = ['4hour', 'day', 'week', 'month', 'quarter']
-BATCH_SIZE = 700
+BATCH_SIZE = 700  # Number of tickers to process per batch
 CACHE_FILE = "/tmp/filtered_inside.json"
-CACHE_EXPIRY = 86400
+CACHE_EXPIRY = 86400  # Cache expiry in seconds (24 hours)
 VOLUME_LOOKBACK = 10  # Days for relative volume calculation
-RELATIVE_VOLUME_THRESHOLD = 1.0  # Minimum relative volume to include
+RELATIVE_VOLUME_THRESHOLD = 1.5  # Minimum relative volume (1.5x)
 
-# Use environment variable for API key
+# Use environment variable for Polygon API key
 API_KEY = os.getenv("POLYGON_API_KEY")
 
 # Setup Logging
@@ -37,49 +38,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Custom CSS for Streamlit UI
-st.markdown("""
-    <style>
-    .stApp {
-        background: #000000;
-        color: #ffffff;
-    }
-    h1 {
-        font-family: 'Arial', sans-serif;
-        color: #00ff99;
-        text-align: center;
-        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
-    }
-    .stDataFrame {
-        background-color: rgba(255, 255, 255, 0.1);
-        border-radius: 10px;
-        padding: 10px;
-    }
-    .stButton>button {
-        background-color: #00ff99;
-        color: #1e3c72;
-        border-radius: 5px;
-        font-weight: bold;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        background-color: #00cc77;
-        transform: scale(1.05);
-    }
-    .css-1d391kg {
-        background-color: rgba(255, 255, 255, 0.1);
-    }
-    .stTextInput input {
-        background-color: rgba(255, 255, 255, 0.1);
-        color: #ffffff;
-        border-radius: 5px;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 # Streamlit UI
-st.title("📈 Pattern Analysis")
-st.markdown("Analyzing 🚀", unsafe_allow_html=True)
+st.title("Pattern Analysis")
+st.markdown("Analyzing")
 
 # Initialize Polygon client
 client = RESTClient(API_KEY) if API_KEY else None
@@ -93,6 +54,7 @@ if 'scheduler_started' not in st.session_state:
     st.session_state.scheduler_started = False
 
 async def fetch_stock_data(session, ticker, timeframe, start_date, end_date, max_retries=3):
+    """Fetch stock data from Polygon API."""
     if timeframe == '4hour':
         url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/4/hour/{start_date}/{end_date}"
     else:
@@ -127,9 +89,11 @@ async def fetch_stock_data(session, ticker, timeframe, start_date, end_date, max
     return ticker, None
 
 def is_inside_bar(current, previous):
+    """Check if the current bar is an inside bar."""
     return (current['high'] <= previous['high'] and current['low'] >= previous['low'])
 
 def is_engulfing_bar(current, previous):
+    """Check if the current bar is an engulfing bar."""
     current_range = current['high'] - current['low']
     previous_range = previous['high'] - previous['low']
     return (current_range > previous_range and 
@@ -139,12 +103,14 @@ def is_engulfing_bar(current, previous):
               current['low'] <= previous['low'] and current['close'] < previous['open'])))
 
 async def analyze_ticker(session, ticker, timeframe):
+    """Analyze a ticker for patterns, relative volume, and earnings."""
     end_date = datetime.now().strftime('%Y-%m-%d')
     if timeframe == '4hour':
         start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
     else:
         start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
+    # Fetch price data for pattern analysis
     ticker, df = await fetch_stock_data(session, ticker, timeframe, start_date, end_date)
     if df is None or len(df) < 2:
         return None
@@ -172,20 +138,20 @@ async def analyze_ticker(session, ticker, timeframe):
     else:
         return None
 
-    # Fetch earnings data
+    # Fetch earnings data using yfinance
     last_earnings_date = None
     next_earnings_date = None
     try:
-        earnings = client.get_earnings(ticker)
-        if earnings:
-            latest_earning = max(earnings, key=lambda x: x.report_date)
-            last_earnings_date = latest_earning.report_date
+        stock = yf.Ticker(ticker)
+        earnings_dates = stock.earnings_dates
+        if earnings_dates is not None and not earnings_dates.empty:
+            last_earnings_date = earnings_dates.index[0].strftime('%Y-%m-%d')
             last_date = datetime.strptime(last_earnings_date, '%Y-%m-%d')
             next_earnings_date = (last_date + timedelta(days=90)).strftime('%Y-%m-%d')
         else:
-            logger.warning(f"No earnings data for {ticker}")
+            logger.warning(f"No earnings data for {ticker} from yfinance")
     except Exception as e:
-        logger.warning(f"Couldn't fetch earnings for {ticker}: {e}")
+        logger.warning(f"Couldn't fetch yfinance earnings for {ticker}: {e}")
 
     result = {
         'ticker': ticker,
@@ -199,6 +165,7 @@ async def analyze_ticker(session, ticker, timeframe):
     return result
 
 async def get_filtered_tickers(rest_client):
+    """Get a list of filtered tickers based on price and volume."""
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, 'r') as f:
             cache_data = json.load(f)
@@ -256,6 +223,7 @@ async def get_filtered_tickers(rest_client):
     return tickers
 
 async def process_batch(session, tickers):
+    """Process a batch of tickers for analysis."""
     tasks = []
     for ticker in tickers:
         for timeframe in TIMEFRAMES:
@@ -265,6 +233,7 @@ async def process_batch(session, tickers):
 
 @st.cache_data
 def run_analysis(_api_key):
+    """Run the main analysis to find patterns."""
     async def main():
         logger.info("Starting script...")
         if not _api_key:
@@ -383,11 +352,11 @@ def run_scheduler():
 
 # Sidebar
 with st.sidebar:
-    st.header("⚙️ Controls")
+    st.header("Controls")
     st.markdown(f"**Last Run**: {st.session_state.get('last_run', 'Not yet run')}")
     st.markdown("---")
     st.markdown("**Run Manually**")
-    if st.button("🔄 Run Analysis Now"):
+    if st.button("Run Analysis Now"):
         if API_KEY:
             with st.spinner("Running analysis..."):
                 clear_cache_and_run()
@@ -407,9 +376,9 @@ if not st.session_state.scheduler_started and API_KEY:
     logger.info("Scheduler started.")
 
 # Main content
-st.subheader("📊 Results")
+st.subheader("Results")
 if st.session_state.analysis_df is not None and not st.session_state.analysis_df.empty:
-    search = st.text_input("🔍 Search Tickers", "")
+    search = st.text_input("Search Tickers", "")
     df = st.session_state.analysis_df.copy()
     if search:
         df = df[df['Ticker'].str.contains(search, case=False, na=False)]
